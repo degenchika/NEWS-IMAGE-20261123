@@ -21,6 +21,16 @@ mkdirSync(OUT_DIR, { recursive: true });
 const dest = join(OUT_DIR, "entry.png");
 copyFileSync(SRC, dest);
 
+// Verify the copy landed byte-for-byte: read both files back and compare.
+// A partial or stale write must fail loudly instead of silently shipping
+// a truncated image to the judge.
+const srcBytes = readFileSync(SRC);
+const destBytes = readFileSync(dest);
+if (!srcBytes.equals(destBytes)) {
+  console.error("entry.png copy mismatch: destination bytes differ from source");
+  process.exit(1);
+}
+
 // Sanity checks: the file must be a whole PNG or JPEG, at most 1 MiB.
 const size = statSync(dest).size;
 if (size > 1048576) {
