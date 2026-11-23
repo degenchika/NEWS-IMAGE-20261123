@@ -6,7 +6,7 @@
 // parent) would try to remove the mount point itself and crash with
 // EBUSY, so there is no removal call anywhere in this file.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,10 +53,15 @@ function checkImage(bytes: Buffer): void {
 }
 
 // Make sure the destination folder exists, then write the image there.
+// The write is atomic: bytes go to a temporary file in the same folder
+// and are renamed over the target, so a reader never sees a half-written
+// entry.png if the process dies mid-write.
 function publishImage(bytes: Buffer, outDir: string): string {
   mkdirSync(outDir, { recursive: true });
   const target = join(outDir, "entry.png");
-  writeFileSync(target, bytes);
+  const temp = join(outDir, "entry.png.tmp");
+  writeFileSync(temp, bytes);
+  renameSync(temp, target);
   return target;
 }
 
