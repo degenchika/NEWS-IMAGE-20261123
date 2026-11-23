@@ -1,47 +1,83 @@
-// Driver program the harness runs with Node 22: it copies the entry image
-// to $MAKEFUN_OUTPUT_DIR/entry.png and sanity-checks the result.
+// News-image entry driver: publishes entry.png into the harness output
+// folder so the judge can look at it.
 //
-// The output directory is only ever created with mkdir, never removed: the
-// grader mounts the output directory as a volume, and removing the mount
-// point itself (rmSync on the directory) throws EBUSY "Device or resource
-// busy" even with force:true, which would fail the run. So the only
-// directory operation here is mkdirSync(outDir, { recursive: true }).
+// The grader hands us the output folder as a mounted volume, so this
+// program only ever *creates* directories. Deleting the folder (or its
+// parent) would try to remove the mount point itself and crash with
+// EBUSY, so there is no removal call anywhere in this file.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const OUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? "./out";
-const SRC = new URL("./entry.png", import.meta.url);
+const ONE_MIB = 1024 * 1024;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47];
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 
-if (!existsSync(SRC)) {
-  console.error("entry.png is missing from the repository");
-  process.exit(1);
-}
-mkdirSync(OUT_DIR, { recursive: true });
-const dest = join(OUT_DIR, "entry.png");
-copyFileSync(SRC, dest);
-
-// Verify the copy landed byte-for-byte: read both files back and compare.
-// A partial or stale write must fail loudly instead of silently shipping
-// a truncated image to the judge.
-const srcBytes = readFileSync(SRC);
-const destBytes = readFileSync(dest);
-if (!srcBytes.equals(destBytes)) {
-  console.error("entry.png copy mismatch: destination bytes differ from source");
-  process.exit(1);
+// Where the harness wants the image. Falls back to a local folder when
+// the variable is unset (handy for a quick manual run).
+function resolveOutputDir(): string {
+  const fromEnv = process.env.MAKEFUN_OUTPUT_DIR;
+  return fromEnv !== undefined && fromEnv !== "" ? fromEnv : "./out";
 }
 
-// Sanity checks: the file must be a whole PNG or JPEG, at most 1 MiB.
-const size = statSync(dest).size;
-if (size > 1048576) {
-  console.error(`entry.png is ${size} bytes, over the 1 MiB limit`);
-  process.exit(1);
+// Absolute path of the image sitting next to this script.
+function resolveEntryPath(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(here, "entry.png");
 }
-const head = readFileSync(dest).subarray(0, 4);
-const isPng = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
-const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
-if (!isPng && !isJpeg) {
-  console.error("entry.png has neither PNG nor JPEG magic bytes");
-  process.exit(1);
+
+// Read the entry image into memory, bailing out if it is not there.
+function loadEntryImage(entryPath: string): Buffer {
+  if (!existsSync(entryPath)) {
+    console.error(`cannot find entry image at ${entryPath}`);
+    process.exit(1);
+  }
+  return readFileSync(entryPath);
 }
-console.log(`wrote ${dest} (${size} bytes)`);
+
+// The bounty wants one whole PNG or JPEG of at most 1 MiB. Check the
+// bytes we are about to ship before anything is written.
+function checkImage(bytes: Buffer): void {
+  if (bytes.length > ONE_MIB) {
+    console.error(`entry image is ${bytes.length} bytes, over the 1 MiB limit`);
+    process.exit(1);
+  }
+  const head = bytes.subarray(0, 4);
+  const looksPng = PNG_SIGNATURE.every((byte, i) => head[i] === byte);
+  const looksJpeg = JPEG_SIGNATURE.every((byte, i) => head[i] === byte);
+  if (!looksPng && !looksJpeg) {
+    console.error("entry image starts with neither PNG nor JPEG magic bytes");
+    process.exit(1);
+  }
+}
+
+// Make sure the destination folder exists, then write the image there.
+function publishImage(bytes: Buffer, outDir: string): string {
+  mkdirSync(outDir, { recursive: true });
+  const target = join(outDir, "entry.png");
+  writeFileSync(target, bytes);
+  return target;
+}
+
+// Read the written file back and make sure it matches the source bytes
+// exactly. A short or stale write must fail here, never reach the judge.
+function verifyCopy(sourceBytes: Buffer, target: string): void {
+  const written = readFileSync(target);
+  if (!written.equals(sourceBytes)) {
+    console.error(`written copy at ${target} differs from the entry image`);
+    process.exit(1);
+  }
+}
+
+function main(): void {
+  const entryPath = resolveEntryPath();
+  const image = loadEntryImage(entryPath);
+  checkImage(image);
+  const outDir = resolveOutputDir();
+  const target = publishImage(image, outDir);
+  verifyCopy(image, target);
+  console.log(`wrote ${target} (${image.length} bytes)`);
+}
+
+main();
